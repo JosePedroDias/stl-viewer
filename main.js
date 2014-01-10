@@ -40,18 +40,12 @@ var save = function() {
 
 
 
-var state_ink = {
+var state = {
     // model
     stl:   'ink',
     rotate: false,
-    scale:  0.1,
-
-    // pos
-    x:      -1,
-    y:      -0.4,
-    z:      0,
-
-    // from thingiverse, use corsproxy
+    scale:  1,
+    debug:  true,
 
     // environment
     color:   [196, 0, 196],
@@ -62,34 +56,6 @@ var state_ink = {
     load:   sLoad,
     clear:  sClear
 };
-
-var state_ie = {
-    // model
-    stl:   'ie',
-    rotate: true,
-    scale:  0.025,
-
-    // pos
-    x:      0,
-    y:      0,
-    z:      0,
-
-    // from thingiverse, use corsproxy
-
-    // environment
-    color:   [196, 0, 196],
-    fog:     true,
-    shadows: true,
-    animate: true,
-
-
-    // actions
-    load:   sLoad,
-    clear:  sClear
-};
-
-var state = state_ink; // default config
-//var state = state_ie; // default config
 
 
 
@@ -102,14 +68,8 @@ var gui = new dat.GUI();
 var model = gui.addFolder('model');
 model.add(state, 'stl', ['ie', 'ink']);
 model.add(state, 'rotate');
-model.add(state, 'scale', 0.01, 10).step(0.01);
+model.add(state, 'debug');
 model.open();
-
-var pos = gui.addFolder('position');
-pos.add(state, 'x', -2, 2).step(0.1);
-pos.add(state, 'y', -2, 2).step(0.1);
-pos.add(state, 'z', -2, 2).step(0.1);
-pos.open();
 
 var environment = gui.addFolder('environment');
 environment.addColor(state, 'color');
@@ -123,7 +83,7 @@ gui.add(state, 'clear');
 
 
 
-var container, controls, camera, cameraTarget, scene, renderer;
+var container, controls, camera, cameraTarget, scene, mesh, renderer;
 
 
 // TODO:
@@ -131,10 +91,10 @@ var container, controls, camera, cameraTarget, scene, renderer;
 
 
 //var MAT_COLOR = 0xAA00AA;
-var MAT_SPEC = 0x111111;
+var MAT_SPEC  = 0x111111;
 var MAT_SHINE = 100;
 var GRD_COLOR = 0x999999;
-var GRD_SPEC = 0x101010;
+var GRD_SPEC  = 0x101010;
 var FOG_COLOR = 0x72645b;
 
 
@@ -183,10 +143,11 @@ function init() {
     }
 
 
+
     // STL file
     var loader = new THREE.STLLoader();
-    loader.addEventListener( 'load', function ( event ) {
-        var geometry = event.content;
+    loader.addEventListener('load', function (ev) {
+        var geometry = ev.content;
         var material = new THREE.MeshPhongMaterial({
             ambient:   COLOR,
             color:     COLOR,
@@ -194,18 +155,60 @@ function init() {
             shininess: MAT_SHINE
         });
         var mesh = new THREE.Mesh(geometry, material);
-        
-        if (state.x !== 0 || state.y !== 0 || state.z !== 0) {
-            mesh.position.set(state.x, state.y, state.z);
+
+        // compute bounding box for geometry:
+        var vMin = Number.MIN_VALUE;
+        var vMax = Number.MAX_VALUE;
+        var m = [vMax, vMax, vMax];
+        var M = [vMin, vMin, vMin];
+
+        var verts = geometry.vertices;
+        for (var i = 0, f = verts.length, vert; i < f; ++i) {
+            vert = verts[i];
+            //if (state.rotate) { vert = {x:vert.x, y:vert.z, z:-vert.y}; } // TODO
+            if (vert.x < m[0]) { m[0] = vert.x; }
+            if (vert.y < m[1]) { m[1] = vert.y; }
+            if (vert.z < m[2]) { m[2] = vert.z; }
+            if (vert.x > M[0]) { M[0] = vert.x; }
+            if (vert.y > M[1]) { M[1] = vert.y; }
+            if (vert.z > M[2]) { M[2] = vert.z; }
         }
+        var dims = [
+            M[0] - m[0],
+            M[1] - m[1],
+            M[2] - m[2]
+        ];
+        console.log('min', m, 'max', M, 'dims', dims);
+
+        var d = dims.slice();
+
+        // compute scale and pos
+        var maxDim = Math.max(dims[0], dims[1], dims[2]);
+        var x, y, z, s = 1 / maxDim;
+        //console.log('scale', s);
+        m[0] *= s;
+        m[1] *= s;
+        m[2] *= s;
+        M[0] *= s;
+        M[1] *= s;
+        M[2] *= s;
+        dims[0] *= s;
+        dims[1] *= s;
+        dims[2] *= s;
+        //console.log('min', m, 'max', M, 'dims', dims);
+        x = -(m[0] + M[0]) / 2;
+        y = -(m[1] + M[1]) / 2;
+        z = -(m[2] + M[2]) / 2;
+
+        mesh.position.set(x, y, z);
         
         if (state.rotate) {
-            mesh.rotation.set(0, Math.PI / 2, 0);
+            //mesh.rotation.set(0, Math.PI/2, 0);
+            mesh.rotation.set(-Math.PI/2, 0, 0);
         }
         
-        if (state.scale !== 1) {
-            mesh.scale.set(state.scale, state.scale, state.scale);
-            info.innerHTML = 'recomputing face normals...';
+        if (s !== 1) {
+            mesh.scale.set(s, s, s);
             geometry.computeFaceNormals();
         }
         
@@ -215,8 +218,25 @@ function init() {
         }
 
         scene.add(mesh);
+
+        if (state.debug) {
+            var wireframe = new THREE.WireframeHelper(mesh);
+            wireframe.material.depthTest   = false;
+            wireframe.material.opacity     = 0.25;
+            wireframe.material.transparent = true;
+            scene.add(wireframe);
+
+            scene.add( new THREE.BoxHelper(mesh) );
+
+            var grid = new THREE.GridHelper(2, 0.1);
+            grid.setColors(0x0000ff, 0x808080);
+            grid.position.y = -0.5;
+            scene.add(grid);
+        }
+
+        var measure = function(n) { return n.toFixed(1) + 'mm'; };
         
-        info.innerHTML = state.stl + '.stl OK!';
+        info.innerHTML = state.stl + '.stl OK. Dimensions: ' + measure(d[0]) + ' ' + measure(d[1]) + ' '  +measure(d[2]) + ' ';
 
         if (!state.animate) {
             controls.update();
@@ -226,6 +246,7 @@ function init() {
     info.innerHTML = 'LOADING ' + state.stl + '.stl...';
     
     loader.load('models/' + state.stl + '.stl');
+    //loader.load('https://www.thingiverse.com/download:336358');
 
     // Lights
     scene.add( new THREE.AmbientLight(0x777777) );
